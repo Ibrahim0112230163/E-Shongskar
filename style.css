@@ -1,0 +1,359 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    
+}
+body {
+    background-image: linear-gradient(180deg, rgb(113, 133, 107), rgb(248, 248, 244));
+    font-family: Arial, sans-serif;
+    background-color: #eafaf1; /* Light green background */
+    margin: 0;
+    padding: 0;
+}
+
+.container {
+    display: flex;
+    justify-content: center;
+    max-width: 400px;
+    margin: 50px auto;
+    padding: 50px 30px;
+    background-color: #fff; /* White box */
+    border-radius: 10px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    
+}
+
+h1 {
+    text-align: center;
+    color: #2c3e50; /* Dark blue for headings */
+    margin-bottom: 20px;
+}
+
+label {
+    font-weight: bold;
+    display: block;
+    margin: 10px 0 5px;
+    color: #34495e; /* Semi-dark blue */
+}
+
+input, select {
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 15px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    text-align: start;
+}
+
+input:focus, select:focus {
+    outline: none;
+    border-color: #27ae60; /* Green border on focus */
+}
+
+button {
+    width: 100%;
+    background-color: #27ae60; /* Green button */
+    color: white;
+    border: none;
+    font-size: 16px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+button:hover {
+    background-color: #219150; /* Darker green on hover */
+}
+
+
+.link-btn {
+    color:#161817; 
+    text-decoration: none;
+    font-weight: bold;
+}
+
+.link-btn:hover {
+    text-decoration: underline;
+}
+
+p {
+    text-align: center;
+}
+
+
+.loginDiv{
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+.submitBtn{
+    margin-top: 20px;
+}
+
+button {
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 15px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+}
+
+.loginForm{
+    width: 100%;
+    display: flex !important;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: left;
+}
+
+#usernameLabel, #passwordLabel{
+    width: 100%;
+}
+
+.fullOverlay{
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#logo-popup {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: rgba(0, 0, 0, 0.8); /* Optional: a semi-transparent background */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+    animation: fadeOut 2.5s ease-out forwards; /* Animation duration and type */
+  }
+
+  /* Style for the logo */
+  #logo-popup img {
+    max-width: 200px; /* Adjust size as needed */
+    width: 100%;
+  }
+
+  /* Keyframes for the fade-out animation */
+  @keyframes fadeOut {
+    0% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      visibility: hidden;
+    }
+  }
+ * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: 'Poppins', sans-serif;
+    }
+
+    body {
+      background-color: #f5f5f5;
+      color: #1a1a1a;
+    }
+    .icons{
+      height:20px;
+      
+    }
+    .logoName{
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 2px;
+    }
+    .logoPic{
+      width: 26px;
+   
+    }
+    header {
+      background-color: #0f2e24;
+      color: white;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 2rem;
+    }
+  
+    .headerIcons{
+      width: 108.2px;
+
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: center; 
+      gap: 10px;
+    }
+    .nav-title {
+      font-weight: bold;
+      font-size: 1.2rem;
+      width: 80px;
+    }
+
+    .top-buttons button {
+      background-color: white;
+      color: #0f2e24;
+      border: none;
+      border-radius: 20px;
+      padding: 0.5rem 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .nameTime{
+        display: flex;
+        justify-content: center;
+        flex-direction: column;
+        font-weight: bold
+    }
+    .picNameTime{
+      display: flex;
+      flex-direction: row;
+    }
+
+    h2 {
+      text-align: center;
+      margin: 1.5rem 0;
+      font-size: 2rem;
+    }
+
+    .report {
+      
+      border-radius: 15px;
+      margin: 1rem auto;
+      max-width: 1000px;
+      max-height: 450px;
+      padding: 1rem;
+  
+    }
+    
+    .reportInside{
+        background-color: white;
+        padding:10px;
+        border-radius: 15px;
+    }      
+    .report-header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 1px;
+      display:flex;
+      justify-content: space-between;
+    }
+
+    .report-header img {
+    
+      height: 35px;
+      border-radius: 50%;
+      margin-right: 0.5rem;
+    }
+    .reportInfo {
+          
+           width: 100%;
+           display: flex;
+           justify-content: space-around;
+    }
+    .nameTime{
+      display: flex;
+ 
+      flex-direction: column;
+    }
+
+    .report-image {
+      width: 55%;
+      border-radius: 10px;
+     
+    }
+
+    .report-content {
+        width: 45%;
+      background: #f0f0f0;
+      border-radius: 10px;
+      padding: 1rem;
+    }
+
+    .report-content p {
+      margin: 0.3rem 0;
+      line-height: 1.4;
+    }
+
+    .report-footer {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 0.5rem;
+      font-size: 0.9rem;
+      color: #444;
+    }
+    .reportFooterIcons{
+      height: 24px;
+    }
+    .likeAndText{
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: row;
+      width: 160px;
+    }
+
+    .imgText{
+      display: flex;
+      align-items: center;
+    }
+    .report-footer span {
+      margin-right: 10px;
+      cursor: pointer;
+    }
+
+    .view-more {
+     
+      display: flex;
+      justify-content: center;
+      margin: 2rem 0;
+    }
+
+    .view-more button {
+      padding: 0.7rem 2rem;
+      border-radius: 30px;
+      background-color: #0f2e24;
+      color: white;
+      border: none;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    footer {
+      background-color: #0f2e24;
+      color: white;
+      padding: 2rem;
+    }
+
+    .footer-grid {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .footerSections{
+      width: 250px;
+    }
+
+
+    .footer-grid a {
+      color: #eee;
+    }
+
+    .footer-icons {
+      display: flex;
+      gap: 1rem;
+      margin-top: 0.5rem;
+    }
+
+ 
+    
+  

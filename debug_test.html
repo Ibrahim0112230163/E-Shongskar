@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug Test</title>
+</head>
+<body>
+    <h1>Like and Comment Debug Test</h1>
+    
+    <div>
+        <h3>Test Like Function</h3>
+        <button id="testLike" data-event-id="1">Test Like Button (Event ID: 1)</button>
+        <span id="likeResult"></span>
+    </div>
+    
+    <div>
+        <h3>Test Comment Function</h3>
+        <input type="text" id="testComment" placeholder="Enter a test comment">
+        <button id="testCommentBtn" data-event-id="1">Test Comment Button (Event ID: 1)</button>
+        <div id="commentResult"></div>
+    </div>
+    
+    <div>
+        <h3>Test Load Comments</h3>
+        <button id="testLoadComments" data-event-id="1">Load Comments (Event ID: 1)</button>
+        <div id="loadCommentsResult"></div>
+    </div>
+    
+    <div>
+        <h3>Test Load Creator Info</h3>
+        <button id="testLoadCreator" data-event-id="1">Load Creator Info (Event ID: 1)</button>
+        <div id="loadCreatorResult"></div>
+    </div>
+
+    <script>
+        // Test Like
+        document.getElementById('testLike').addEventListener('click', function() {
+            const eventId = this.getAttribute('data-event-id');
+            console.log('Testing like for event:', eventId);
+            
+            fetch('like_event.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'like_event_id=' + encodeURIComponent(eventId)
+            })
+            .then(res => {
+                console.log('Like response status:', res.status);
+                return res.text();
+            })
+            .then(text => {
+                console.log('Like response text:', text);
+                document.getElementById('likeResult').innerHTML = '<pre>' + text + '</pre>';
+                try {
+                    const data = JSON.parse(text);
+                    console.log('Like response data:', data);
+                } catch(e) {
+                    console.error('Failed to parse JSON:', e);
+                }
+            })
+            .catch(error => {
+                console.error('Like error:', error);
+                document.getElementById('likeResult').innerHTML = 'Error: ' + error.message;
+            });
+        });
+        
+        // Test Comment
+        document.getElementById('testCommentBtn').addEventListener('click', function() {
+            const eventId = this.getAttribute('data-event-id');
+            const comment = document.getElementById('testComment').value.trim();
+            
+            if (!comment) {
+                alert('Please enter a comment');
+                return;
+            }
+            
+            console.log('Testing comment for event:', eventId, 'Comment:', comment);
+            
+            fetch('comment_event.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'comment_event_id=' + encodeURIComponent(eventId) + '&comment_text=' + encodeURIComponent(comment)
+            })
+            .then(res => {
+                console.log('Comment response status:', res.status);
+                return res.text();
+            })
+            .then(text => {
+                console.log('Comment response text:', text);
+                document.getElementById('commentResult').innerHTML = '<pre>' + text + '</pre>';
+                try {
+                    const data = JSON.parse(text);
+                    console.log('Comment response data:', data);
+                    if (data.success) {
+                        document.getElementById('testComment').value = '';
+                    }
+                } catch(e) {
+                    console.error('Failed to parse JSON:', e);
+                }
+            })
+            .catch(error => {
+                console.error('Comment error:', error);
+                document.getElementById('commentResult').innerHTML = 'Error: ' + error.message;
+            });
+        });
+        
+        // Test Load Comments
+        document.getElementById('testLoadComments').addEventListener('click', function() {
+            const eventId = this.getAttribute('data-event-id');
+            console.log('Testing load comments for event:', eventId);
+            
+            fetch('get_comments.php?event_id=' + eventId)
+            .then(res => {
+                console.log('Load comments response status:', res.status);
+                return res.text();
+            })
+            .then(text => {
+                console.log('Load comments response text:', text);
+                document.getElementById('loadCommentsResult').innerHTML = '<pre>' + text + '</pre>';
+                try {
+                    const data = JSON.parse(text);
+                    console.log('Load comments response data:', data);
+                } catch(e) {
+                    console.error('Failed to parse JSON:', e);
+                }
+            })
+            .catch(error => {
+                console.error('Load comments error:', error);
+                document.getElementById('loadCommentsResult').innerHTML = 'Error: ' + error.message;
+            });
+        });
+        
+        // Test Load Creator Info
+        document.getElementById('testLoadCreator').addEventListener('click', function() {
+            const eventId = this.getAttribute('data-event-id');
+            console.log('Testing load creator info for event:', eventId);
+            
+            fetch('get_creator_info.php?event_id=' + eventId)
+            .then(res => {
+                console.log('Load creator response status:', res.status);
+                return res.text();
+            })
+            .then(text => {
+                console.log('Load creator response text:', text);
+                document.getElementById('loadCreatorResult').innerHTML = '<pre>' + text + '</pre>';
+                try {
+                    const data = JSON.parse(text);
+                    console.log('Load creator response data:', data);
+                } catch(e) {
+                    console.error('Failed to parse JSON:', e);
+                }
+            })
+            .catch(error => {
+                console.error('Load creator error:', error);
+                document.getElementById('loadCreatorResult').innerHTML = 'Error: ' + error.message;
+            });
+        });
+    </script>
+</body>
+</html>
