@@ -1,247 +1,202 @@
-<!DOCTYPE html>
-<html lang="en">
+<?php
+require_once __DIR__ . '/includes/functions.php';
+$user = require_login();
+$area = $user['area'];
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard</title>
-    <!-- Bootstrap CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
-    <!-- FontAwesome -->
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css" rel="stylesheet">
+$stmt = $pdo->prepare("SELECT
+    (SELECT COUNT(*) FROM reports WHERE area = ? AND status IN ('Pending','In Progress')) AS open_reports,
+    (SELECT COUNT(*) FROM reports WHERE area = ? AND status = 'Solved')                  AS solved_reports,
+    (SELECT COUNT(*) FROM events  WHERE area = ? AND status = 'active')                   AS active_events,
+    (SELECT COUNT(*) FROM users   WHERE area = ? AND id <> ? AND last_seen >= NOW() - INTERVAL " . ONLINE_WINDOW_MINUTES . " MINUTE) AS online");
+$stmt->execute([$area, $area, $area, $area, $user['id']]);
+$stats = $stmt->fetch();
 
-    <style>
-        body {
-            font-family: 'Roboto', sans-serif;
-            background: linear-gradient(135deg, #c3cfe2 0%,  #f5f7fa 100%);
-            color: #333;
-        }
+$alerts = active_alerts($user, 3);
 
-        .navbar {
-            background-color: #007bff;
-        }
+$stmt = $pdo->prepare("SELECT r.*, u.full_name, u.username,
+        (SELECT COUNT(*) FROM report_votes v WHERE v.report_id = r.id) AS votes
+    FROM reports r JOIN users u ON u.id = r.user_id
+    WHERE r.area = ? AND r.status IN ('Pending','In Progress')
+    ORDER BY votes DESC, r.created_at DESC LIMIT 4");
+$stmt->execute([$area]);
+$reports = $stmt->fetchAll();
 
-        .navbar-brand {
-            font-weight: bold;
-            color: #fff;
-        }
+$stmt = $pdo->prepare("SELECT e.*, u.full_name,
+        (SELECT COUNT(*) FROM event_participants p WHERE p.event_id = e.id) AS participants
+    FROM events e JOIN users u ON u.id = e.user_id
+    WHERE e.area = ? AND e.status = 'active'
+    ORDER BY e.created_at DESC LIMIT 4");
+$stmt->execute([$area]);
+$events = $stmt->fetchAll();
 
-        .navbar-brand:hover {
-            color: #ddd;
-        }
+$best = leaderboard($area, 1)[0] ?? null;
+$monthly = leaderboard(null, 1, date('Y-m-01'))[0] ?? null;
 
-        .navbar-nav .nav-link {
-            color: #fff;
-        }
+$stmt = $pdo->prepare('SELECT id, username, full_name, avatar, is_verified FROM users WHERE area = ? AND is_verified = 1 AND id <> ? ORDER BY full_name LIMIT 5');
+$stmt->execute([$area, $user['id']]);
+$representatives = $stmt->fetchAll();
 
-        .navbar-nav .nav-link:hover {
-            color: #ddd;
-        }
+$stmt = $pdo->prepare('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5');
+$stmt->execute([$user['id']]);
+$notifications = $stmt->fetchAll();
 
-        .hero-section {
-            background: linear-gradient(to right, #007bff, #6c757d);
-            color: white;
-            padding: 50px 15px;
-            text-align: center;
-            height: 180px;
-            margin-top: 70px; /* Account for fixed header */
-        }
+$pageTitle = 'Home';
+$activeNav = 'dashboard';
+include __DIR__ . '/includes/header.php';
+?>
 
-        .hero-section h1 {
-            font-size: 2.5rem;
-            font-weight: bold;
-        }
-
-        .hero-section p {
-            font-size: 1.2rem;
-        }
-
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
-            transition: all 0.3s ease-in-out;
-        }
-
-        .notification-banner {
-            display: none;
-            position: fixed;
-            top: 0;
-            width: 100%;
-            background: #f39c12;
-            color: #fff;
-            text-align: center;
-            padding: 10px;
-            z-index: 1000;
-        }
-
-        @media (max-width: 768px) {
-            .hero-section h1 {
-                font-size: 2rem;
-            }
-
-            .hero-section p {
-                font-size: 1rem;
-            }
-        }
-    </style>
-</head>
-
-<body>
-    <?php include 'header.php'; ?>
-    <!-- <?php
-    include 'database.php';
-    session_start();
-
-    if (!isset($_SESSION['username'])) {
-        header('Location: login.php');
-        exit;
-    }
-
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE username = :username");
-    $stmt->execute(['username' => $_SESSION['username']]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    $eventStmt = $pdo->prepare("
-        SELECT events.*, users.full_name 
-        FROM events 
-        JOIN users ON events.username = users.username 
-        WHERE events.location = :location 
-        AND events.username != :username
-        AND events.created_at >= NOW() - INTERVAL 1 DAY
-    ");
-    $eventStmt->execute([
-        'location' => $user['location'],
-        'username' => $user['username'],
-    ]);
-    $matchingEvents = $eventStmt->fetchAll(PDO::FETCH_ASSOC);
-
-
-    // Count users online in the logged-in user's location
-    $userCountStmt = $pdo->prepare("
-    SELECT COUNT(*) AS online_count
-    FROM local_users_online
-    WHERE location = :location AND username != :username
-    ");
-    $userCountStmt->execute([
-        'location' => $user['location'],
-        'username' => $_SESSION['username'],
-    ]);
-    $userCount = $userCountStmt->fetch(PDO::FETCH_ASSOC)['online_count'];
-    ?> -->
-
-    <!-- Hero Section -->
-    <div class="hero-section" >
-        <div class="container" >
-            <!-- <h1><?php echo htmlspecialchars($user['username']); ?></h1> -->
-            <h3 style="padding-top: 20px;">Explore your dashboard and take actions today!</h3>
+<section class="page-hero">
+    <div class="container row-between">
+        <div>
+            <div class="breadcrumb"><i class="fa-solid fa-location-dot"></i> <?= e($area) ?>, <?= e($user['division']) ?></div>
+            <h1>Hello, <?= e(explode(' ', $user['full_name'])[0]) ?> 👋</h1>
+            <p>Here is what is happening in your community today.</p>
         </div>
+        <a href="<?= url('report_new.php') ?>" class="btn btn-accent"><i class="fa-solid fa-plus"></i> Report an issue</a>
+    </div>
+</section>
+
+<div class="container stack">
+    <div class="grid grid-4">
+        <div class="stat"><div class="stat-icon amber"><i class="fa-solid fa-flag"></i></div><div><div class="stat-value"><?= $stats['open_reports'] ?></div><div class="stat-label">Open issues in your area</div></div></div>
+        <div class="stat"><div class="stat-icon green"><i class="fa-solid fa-circle-check"></i></div><div><div class="stat-value"><?= $stats['solved_reports'] ?></div><div class="stat-label">Issues solved</div></div></div>
+        <div class="stat"><div class="stat-icon blue"><i class="fa-solid fa-calendar-days"></i></div><div><div class="stat-value"><?= $stats['active_events'] ?></div><div class="stat-label">Active events</div></div></div>
+        <a class="stat card-link" href="<?= url('neighbours.php') ?>"><div class="stat-icon green"><i class="fa-solid fa-users"></i></div><div><div class="stat-value"><?= $stats['online'] ?></div><div class="stat-label">Neighbours online now</div></div></a>
     </div>
 
-    <!-- Notification Banner -->
-    <?php if (!empty($matchingEvents)): ?>
-        <div class="notification-banner" id="notificationBanner"></div>
-        <script>
-            const notifications = <?php echo json_encode(array_map(function ($event) {
+    <?php foreach ($alerts as $a): ?>
+        <a class="alert-strip <?= $a['severity'] === 'critical' ? '' : e($a['severity']) ?>" href="<?= url('alerts.php') ?>">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+            <span><strong><?= e($a['title']) ?></strong> — <?= e(excerpt($a['description'], 110)) ?></span>
+        </a>
+    <?php endforeach; ?>
 
-                                        return "An event is created by {$event['full_name']} at {$event['location']} on " . date('Y-m-d', strtotime($event['created_at'])) . ".";
-                                    }, $matchingEvents)); ?>;
-
-            let currentIndex = 0;
-            const banner = document.getElementById('notificationBanner');
-
-            function showNotification() {
-                if (currentIndex < notifications.length) {
-                    banner.textContent = notifications[currentIndex];
-                    banner.style.display = 'block';
-                    currentIndex++;
-                    setTimeout(hideNotification, 1000);
-                }
-            }
-
-            function hideNotification() {
-                banner.style.display = 'none';
-                setTimeout(showNotification, 1000);
-            }
-
-            showNotification();
-        </script>
-    <?php endif; ?>
-
-    <!-- Options Section -->
-    <div class="container my-5">
-        <div class="row g-4">
-            <div class="col-md-4">
-                <a href="report_issue.php" class="text-decoration-none">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-body text-center">
-                        <i class="fas fa-exclamation-triangle fa-2x mb-3" style="color: #0b493e;"></i>
-                            <h5 class="card-title">Report Issues</h5>
-                        </div>
-                    </div>
-                </a>
-            </div>
-
-            <div class="col-md-4">
-                <a href="alert.php" class="text-decoration-none">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-body text-center">
-                        <i class="fas fa-bell fa-2x mb-3" style="color: #339c6a;"></i>
-
-                            <h5 class="card-title">Alert</h5>
-                        </div>
-                    </div>
-                </a>
-            </div>
-
-            <div class="col-md-4">
-                <a href="event.php" class="text-decoration-none">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-body text-center">
-                            <i class="fas fa-calendar-alt fa-2x text-primary mb-3"></i>
-                            <h5 class="card-title">Event</h5>
-                        </div>
-                    </div>
-                </a>
-            </div>
-
-            <div class="col-md-4">
-                <a href="Emer_contact.php" class="text-decoration-none">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-body text-center">
-                        <i class="fas fa-phone fa-2x mb-3" style="color: green;"></i>
-                            <h5 class="card-title">Emergency Contact</h5>
-                        </div>
-                    </div>
-                </a>
-            </div>
-
-            <div class="col-md-4">
-                <a href="blood_donate.php" class="text-decoration-none">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-body text-center">
-                            <i class="fas fa-tint fa-2x text-danger mb-3"></i>
-                            <h5 class="card-title">Blood Donor Near You</h5>
-                        </div>
-                    </div>
-                </a>
-            </div>
-            <div class="col-md-4">
-                <a href="response_events.php" class="text-decoration-none">
-                    <div class="card shadow-sm border-0">
-                        <div class="card-body text-center">
-                        <i class="fas fa-handshake fa-2x mb-3" style="color: #1E3A8A;"></i>
-                            <h5 class="card-title">Response In Event</h5>
-                        </div>
-                    </div>
-                </a>
-            </div>
-        </div>
+    <div class="quick-actions">
+        <a class="quick-action" href="<?= url('report_new.php') ?>"><i class="fa-solid fa-flag"></i>Report issue</a>
+        <a class="quick-action" href="<?= url('event_new.php') ?>"><i class="fa-solid fa-calendar-plus"></i>Create event</a>
+        <a class="quick-action" href="<?= url('blood.php') ?>"><i class="fa-solid fa-droplet"></i>Find blood</a>
+        <a class="quick-action" href="<?= url('chat.php') ?>"><i class="fa-solid fa-comments"></i>Messages</a>
+        <a class="quick-action" href="<?= url('leaderboard.php') ?>"><i class="fa-solid fa-trophy"></i>Leaderboard</a>
+        <a class="quick-action sos" href="<?= url('emergency.php#sos') ?>"><i class="fa-solid fa-tower-broadcast"></i>SOS</a>
     </div>
 
-    <!-- Bootstrap JS -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
-</body>
+    <div class="layout-sidebar">
+        <div class="stack">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="fa-solid fa-flag"></i> Top issues near you</h3>
+                    <a href="<?= url('reports.php') ?>" class="btn btn-ghost btn-sm">View all</a>
+                </div>
+                <?php if (!$reports): ?>
+                    <div class="empty"><i class="fa-regular fa-face-smile"></i><p>No open issues in <?= e($area) ?>. Spot a problem? <a href="<?= url('report_new.php') ?>">Report it</a>.</p></div>
+                <?php else: ?>
+                    <ul class="list">
+                        <?php foreach ($reports as $r): ?>
+                            <li class="list-item">
+                                <span class="list-icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
+                                <div class="list-body">
+                                    <a href="<?= url('report.php?id=' . $r['id']) ?>"><strong><?= e($r['title']) ?></strong></a>
+                                    <div class="meta small muted">
+                                        <span><?= e($r['issue_type']) ?></span>
+                                        <span><i class="fa-solid fa-thumbs-up"></i> <?= $r['votes'] ?></span>
+                                        <span><?= time_ago($r['created_at']) ?></span>
+                                    </div>
+                                </div>
+                                <?= status_badge($r['status']) ?>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            </div>
 
-</html>
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="fa-solid fa-calendar-days"></i> Community events</h3>
+                    <a href="<?= url('events.php') ?>" class="btn btn-ghost btn-sm">View all</a>
+                </div>
+                <?php if (!$events): ?>
+                    <div class="empty"><i class="fa-regular fa-calendar"></i><p>No active events yet. <a href="<?= url('event_new.php') ?>">Start one</a> and bring neighbours together.</p></div>
+                <?php else: ?>
+                    <ul class="list">
+                        <?php foreach ($events as $ev): ?>
+                            <li class="list-item">
+                                <span class="list-icon"><i class="fa-solid <?= EVENT_CATEGORIES[$ev['category']] ?? 'fa-star' ?>"></i></span>
+                                <div class="list-body">
+                                    <a href="<?= url('event.php?id=' . $ev['id']) ?>"><strong><?= e($ev['title']) ?></strong></a>
+                                    <div class="meta small muted">
+                                        <span>by <?= e($ev['full_name']) ?></span>
+                                        <?php if ($ev['event_date']): ?><span><i class="fa-regular fa-clock"></i> <?= fmt_date($ev['event_date'], 'd M, g:i A') ?></span><?php endif; ?>
+                                        <span><i class="fa-solid fa-users"></i> <?= $ev['participants'] ?> joined</span>
+                                    </div>
+                                </div>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <aside class="stack">
+            <div class="card">
+                <h3 class="card-title"><i class="fa-solid fa-award"></i> Community heroes</h3>
+                <div class="list mt-2">
+                    <div class="list-item">
+                        <?= $best ? avatar($best, 'md') : '<span class="list-icon"><i class="fa-solid fa-medal"></i></span>' ?>
+                        <div class="list-body">
+                            <small class="muted">Best citizen in <?= e($area) ?></small>
+                            <strong><?= $best ? e($best['full_name']) . ' · ' . $best['total_score'] . ' pts' : 'Be the first!' ?></strong>
+                        </div>
+                    </div>
+                    <div class="list-item">
+                        <?= $monthly ? avatar($monthly, 'md') : '<span class="list-icon"><i class="fa-solid fa-calendar-check"></i></span>' ?>
+                        <div class="list-body">
+                            <small class="muted">Citizen of the month (<?= date('F') ?>)</small>
+                            <strong><?= $monthly ? e($monthly['full_name']) . ' · ' . $monthly['total_score'] . ' pts' : 'Not decided yet' ?></strong>
+                        </div>
+                    </div>
+                </div>
+                <a href="<?= url('leaderboard.php') ?>" class="btn btn-outline btn-sm btn-block mt-2">See leaderboard</a>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="fa-solid fa-bell"></i> Latest updates</h3>
+                    <a href="<?= url('notifications.php') ?>" class="btn btn-ghost btn-sm">All</a>
+                </div>
+                <?php if (!$notifications): ?>
+                    <p class="muted mb-0">You're all caught up.</p>
+                <?php else: ?>
+                    <ul class="list">
+                        <?php foreach ($notifications as $n): ?>
+                            <li class="list-item">
+                                <div class="list-body">
+                                    <a href="<?= url('notifications.php?open=' . $n['id']) ?>" class="<?= $n['is_read'] ? 'muted' : '' ?>"><?= e($n['message']) ?></a>
+                                    <div class="small muted"><?= time_ago($n['created_at']) ?></div>
+                                </div>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            </div>
+
+            <div class="card">
+                <h3 class="card-title"><i class="fa-solid fa-user-shield"></i> Local representatives</h3>
+                <?php if (!$representatives): ?>
+                    <p class="muted mb-0 mt-1">No verified representatives in your area yet.</p>
+                <?php else: ?>
+                    <ul class="list mt-2">
+                        <?php foreach ($representatives as $rep): ?>
+                            <li class="list-item" style="align-items:center">
+                                <?= avatar($rep, 'sm') ?>
+                                <div class="list-body"><strong><?= e($rep['full_name']) ?><?= verified_tick($rep) ?></strong></div>
+                                <a class="btn btn-outline btn-sm" href="<?= url('chat.php?with=' . $rep['id']) ?>"><i class="fa-solid fa-message"></i></a>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            </div>
+        </aside>
+    </div>
+</div>
+
+<?php include __DIR__ . '/includes/footer.php'; ?>

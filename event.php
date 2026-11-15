@@ -1,527 +1,383 @@
 <?php
-include 'database.php';
-session_start();
+require_once __DIR__ . '/includes/functions.php';
+$user = require_login();
 
-if (!isset($_SESSION['username'])) {
-    header('Location: login.php');
-    exit;
+$id = (int) input('id');
+$event = find_event($id);
+if (!$event) {
+    flash('error', 'That event could not be found.');
+    redirect('events.php');
 }
 
-$stmt = $pdo->prepare("SELECT * FROM users WHERE username = :username");
-$stmt->execute(['username' => $_SESSION['username']]);
-$user = $stmt->fetch(PDO::FETCH_ASSOC);
+$uid = (int) $user['id'];
+$isOwner = (int) $event['user_id'] === $uid;
+$isLocalRep = $user['is_verified'] && strcasecmp($user['area'], $event['area']) === 0;
 
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    if (!empty($_POST['event_description']) && !empty($_POST['category'])) {
-        $event_description = $_POST['event_description'];
-        $category = $_POST['category'];
-        $username = $user['username'];
-        $contact = $user['contact_no'];
-        $location = $user['location'];
+$stmt = $pdo->prepare('SELECT * FROM event_funds WHERE event_id = ?');
+$stmt->execute([$id]);
+$fund = $stmt->fetch() ?: null;
 
-        $stmt = $pdo->prepare("INSERT INTO events (username, contact, location, event_description, category) 
-                               VALUES (:username, :contact, :location, :event_description, :category)");
-        $result = $stmt->execute([
-            'username' => $username,
-            'contact' => $contact,
-            'location' => $location,
-            'event_description' => $event_description,
-            'category' => $category
-        ]);
+if (is_post()) {
+    verify_csrf();
+    $action = input('action');
+    $back = 'event.php?id=' . $id;
 
-        if ($result) {
-            header('Location: response_events.php');
-            exit;
-        } else {
-            $error = "Failed to create event. Please try again.";
-        }
-    } else {
-        $error = "Please provide a description and select a category for the event.";
+    switch ($action) {
+        case 'like':
+            $del = $pdo->prepare('DELETE FROM event_likes WHERE event_id = ? AND user_id = ?');
+            $del->execute([$id, $uid]);
+            if (!$del->rowCount()) {
+                $pdo->prepare('INSERT INTO event_likes (event_id, user_id) VALUES (?, ?)')->execute([$id, $uid]);
+            }
+            break;
+
+        case 'join':
+            if ($event['status'] === 'active') {
+                $pdo->prepare('INSERT IGNORE INTO event_participants (event_id, user_id) VALUES (?, ?)')->execute([$id, $uid]);
+                if (!$isOwner) {
+                    notify((int) $event['user_id'], 'event', $user['full_name'] . ' joined your event "' . $event['title'] . '".', $back);
+                }
+                flash('success', 'You have joined this event. See you there!');
+            }
+            break;
+
+        case 'leave':
+            if (!$isOwner) {
+                $pdo->prepare('DELETE FROM event_participants WHERE event_id = ? AND user_id = ?')->execute([$id, $uid]);
+                flash('info', 'You are no longer participating.');
+            }
+            break;
+
+        case 'comment':
+            $body = input('body');
+            if ($body !== '' && mb_strlen($body) <= 1000) {
+                $pdo->prepare('INSERT INTO event_comments (event_id, user_id, body) VALUES (?, ?, ?)')->execute([$id, $uid, $body]);
+                if (!$isOwner) {
+                    notify((int) $event['user_id'], 'event', $user['full_name'] . ' commented on "' . $event['title'] . '".', $back . '#comments');
+                }
+            }
+            $back .= '#comments';
+            break;
+
+        case 'delete_comment':
+            $pdo->prepare('DELETE FROM event_comments WHERE id = ? AND event_id = ? AND (user_id = ? OR ?)')
+                ->execute([(int) input('comment_id'), $id, $uid, $isOwner ? 1 : 0]);
+            $back .= '#comments';
+            break;
+
+        case 'request_fund':
+            $target = (float) input('target_amount');
+            if ($isOwner && $event['status'] === 'active' && (!$fund || $fund['status'] === 'pending') && $target >= 100) {
+                $pdo->prepare('INSERT INTO event_funds (event_id, target_amount, purpose) VALUES (?, ?, ?)
+                               ON DUPLICATE KEY UPDATE target_amount = VALUES(target_amount), purpose = VALUES(purpose)')
+                    ->execute([$id, $target, input('purpose') ?: null]);
+                $reps = $pdo->prepare('SELECT id FROM users WHERE area = ? AND is_verified = 1 AND id <> ?');
+                $reps->execute([$event['area'], $uid]);
+                foreach ($reps->fetchAll(PDO::FETCH_COLUMN) as $repId) {
+                    notify((int) $repId, 'fund', 'Fundraiser request of ' . money($target) . ' for "' . $event['title'] . '" needs your approval.', $back);
+                }
+                flash('success', 'Funding request sent. A verified local representative needs to approve it before donations open.');
+            } else {
+                flash('error', 'The funding target must be at least ৳100.');
+            }
+            break;
+
+        case 'approve_fund':
+            if ($fund && $fund['status'] === 'pending' && $isLocalRep && !$isOwner) {
+                $pdo->prepare("UPDATE event_funds SET status = 'open', approved_by = ?, approved_at = NOW() WHERE event_id = ?")->execute([$uid, $id]);
+                notify((int) $event['user_id'], 'fund', 'Your fundraiser for "' . $event['title'] . '" was approved by ' . $user['full_name'] . '. Donations are open.', $back);
+                flash('success', 'Fundraiser approved. Donations are now open.');
+            }
+            break;
+
+        case 'close_fund':
+            if ($fund && $fund['status'] === 'open' && $isOwner) {
+                $pdo->prepare("UPDATE event_funds SET status = 'closed' WHERE event_id = ?")->execute([$id]);
+                flash('info', 'The fundraiser is now closed.');
+            }
+            break;
+
+        case 'donate':
+            $amount = (float) input('amount');
+            $method = in_array(input('method'), DONATION_METHODS, true) ? input('method') : 'bKash';
+            if ($fund && $fund['status'] === 'open' && $amount >= 10) {
+                $pdo->prepare('INSERT INTO donations (event_id, user_id, amount, method, transaction_ref) VALUES (?, ?, ?, ?, ?)')
+                    ->execute([$id, $uid, $amount, $method, input('transaction_ref') ?: null]);
+                if (!$isOwner) {
+                    notify((int) $event['user_id'], 'fund', $user['full_name'] . ' donated ' . money($amount) . ' to "' . $event['title'] . '".', $back);
+                }
+                flash('success', 'Thank you for donating ' . money($amount) . '!');
+            } else {
+                flash('error', 'The minimum donation is ৳10.');
+            }
+            break;
+
+        case 'complete':
+            if ($isOwner && $event['status'] === 'active') {
+                $pdo->prepare("UPDATE events SET status = 'completed', completed_at = NOW() WHERE id = ?")->execute([$id]);
+                $pdo->prepare("UPDATE event_funds SET status = 'closed' WHERE event_id = ? AND status = 'open'")->execute([$id]);
+                $reps = $pdo->prepare('SELECT id FROM users WHERE area = ? AND is_verified = 1 AND id <> ?');
+                $reps->execute([$event['area'], $uid]);
+                foreach ($reps->fetchAll(PDO::FETCH_COLUMN) as $repId) {
+                    notify((int) $repId, 'event', '"' . $event['title'] . '" was marked as completed. Please verify the work.', 'completed_events.php');
+                }
+                flash('success', 'Marked as completed. A local representative will verify it, then an admin will approve it.');
+            }
+            break;
+
+        case 'verify':
+            if ($isLocalRep && !$isOwner && $event['status'] === 'completed') {
+                $pdo->prepare("UPDATE events SET status = 'verified', verified_by = ?, verified_at = NOW() WHERE id = ?")->execute([$uid, $id]);
+                notify((int) $event['user_id'], 'event', '"' . $event['title'] . '" was verified by ' . $user['full_name'] . '.', $back);
+                flash('success', 'Thank you for verifying this event.');
+            }
+            break;
+
+        case 'delete':
+            if ($isOwner && $event['status'] === 'active') {
+                $pdo->prepare('DELETE FROM events WHERE id = ?')->execute([$id]);
+                flash('success', 'The event was deleted.');
+                redirect('events.php?scope=mine');
+            }
+            break;
     }
+    redirect($back);
 }
+
+// Page data
+$stmt = $pdo->prepare('SELECT
+    (SELECT COUNT(*) FROM event_likes WHERE event_id = ?) AS likes,
+    EXISTS(SELECT 1 FROM event_likes WHERE event_id = ? AND user_id = ?) AS liked,
+    EXISTS(SELECT 1 FROM event_participants WHERE event_id = ? AND user_id = ?) AS joined,
+    (SELECT COALESCE(SUM(amount), 0) FROM donations WHERE event_id = ?) AS raised,
+    (SELECT COUNT(DISTINCT user_id) FROM donations WHERE event_id = ?) AS donors');
+$stmt->execute([$id, $id, $uid, $id, $uid, $id, $id]);
+$s = $stmt->fetch();
+
+$stmt = $pdo->prepare('SELECT u.id, u.username, u.full_name, u.avatar, u.is_verified FROM event_participants p JOIN users u ON u.id = p.user_id WHERE p.event_id = ? ORDER BY p.joined_at');
+$stmt->execute([$id]);
+$participants = $stmt->fetchAll();
+
+$stmt = $pdo->prepare('SELECT c.*, u.full_name, u.username, u.avatar, u.is_verified FROM event_comments c JOIN users u ON u.id = c.user_id WHERE c.event_id = ? ORDER BY c.created_at');
+$stmt->execute([$id]);
+$comments = $stmt->fetchAll();
+
+$verifier = null;
+if ($event['verified_by']) {
+    $stmt = $pdo->prepare('SELECT full_name FROM users WHERE id = ?');
+    $stmt->execute([$event['verified_by']]);
+    $verifier = $stmt->fetchColumn();
+}
+$fundApprover = null;
+if ($fund && $fund['approved_by']) {
+    $stmt = $pdo->prepare('SELECT full_name FROM users WHERE id = ?');
+    $stmt->execute([$fund['approved_by']]);
+    $fundApprover = $stmt->fetchColumn();
+}
+
+$pageTitle = $event['title'];
+$activeNav = 'events';
+include __DIR__ . '/includes/header.php';
 ?>
 
-<!DOCTYPE html>
-<html lang="en">
+<section class="page-hero">
+    <div class="container">
+        <div class="breadcrumb"><a href="<?= url('events.php') ?>">Events</a> / #<?= $event['id'] ?></div>
+        <h1><?= e($event['title']) ?></h1>
+        <p><i class="fa-solid <?= EVENT_CATEGORIES[$event['category']] ?? 'fa-star' ?>"></i> <?= e($event['category']) ?> · <i class="fa-solid fa-location-dot"></i> <?= e($event['area']) ?>, <?= e($event['division']) ?></p>
+    </div>
+</section>
 
-<head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Create Event | E-Shongskar</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
-    
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        primary: {
-                            50: '#eef7f6',
-                            100: '#d5eae7',
-                            200: '#abd4cd',
-                            300: '#81bdb3',
-                            400: '#56a69a',
-                            500: '#0b493e',
-                            600: '#094236',
-                            700: '#07362d',
-                            800: '#052b24',
-                            900: '#021d18',
-                        },
-                        secondary: {
-                            50: '#f0f9fa',
-                            100: '#d0eff1',
-                            200: '#a8dadc',
-                            300: '#86c5c8',
-                            400: '#5aacaf',
-                            500: '#418e91',
-                            600: '#377779',
-                            700: '#2c6062',
-                            800: '#224a4c',
-                            900: '#182f30',
-                        },
-                    },
-                    fontFamily: {
-                        sans: ['Inter', 'system-ui', 'sans-serif'],
-                        heading: ['Poppins', 'sans-serif'],
-                    },
-                    boxShadow: {
-                        card: '0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.01)',
-                        'card-hover': '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
-                    },
-                },
-            },
-        }
-    </script>
-    
-    <style>
-        /* Background and layout styles */
-        body {
-            font-family: 'Inter', sans-serif;
-            background: linear-gradient(135deg, #e0f7fa 0%, #c8e6c9 100%) !important;
-            background-attachment: fixed !important;
-            min-height: 100vh;
-            padding-top: 30pt;
-        }
-        
-        html {
-            background: linear-gradient(135deg, #e0f7fa 0%, #c8e6c9 100%);
-            background-attachment: fixed;
-            height: 100%;
-        }
-        
-        h1, h2, h3, h4, h5, h6 {
-            font-family: 'Poppins', sans-serif;
-        }
-        
-        /* Floating circle animations */
-        @keyframes float {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-10px); }
-        }
-        
-        /* Background pattern with circles */
-        .bg-pattern {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
-            z-index: -1;
-            overflow: hidden;
-        }
-        
-        /* Decorative circles */
-        .decorative-circle-1 {
-            position: fixed;
-            top: 20%;
-            right: 10%;
-            width: 200px;
-            height: 200px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(168, 218, 220, 0.2) 0%, rgba(168, 218, 220, 0.05) 70%, transparent 100%);
-            z-index: -1;
-            animation: float 8s ease-in-out infinite;
-        }
-        
-        .decorative-circle-2 {
-            position: fixed;
-            bottom: 15%;
-            left: 5%;
-            width: 300px;
-            height: 300px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(11, 73, 62, 0.15) 0%, rgba(11, 73, 62, 0.05) 70%, transparent 100%);
-            z-index: -1;
-            animation: float 10s ease-in-out infinite;
-            animation-delay: 1s;
-        }
-        
-        .decorative-circle-3 {
-            position: fixed;
-            top: 40%;
-            left: 25%;
-            width: 150px;
-            height: 150px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(200, 230, 201, 0.25) 0%, rgba(200, 230, 201, 0.08) 70%, transparent 100%);
-            z-index: -1;
-            animation: float 7s ease-in-out infinite;
-            animation-delay: 2s;
-        }
-        
-        .decorative-circle-4 {
-            position: fixed;
-            bottom: 8%;
-            right: 12%;
-            width: 180px;
-            height: 180px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(11, 73, 62, 0.12) 0%, rgba(11, 73, 62, 0.04) 70%, transparent 100%);
-            z-index: -1;
-            animation: float 8s ease-in-out infinite;
-            animation-delay: 0.5s;
-        }
-        
-        .decorative-circle-5 {
-            position: fixed;
-            top: 25%;
-            right: 35%;
-            width: 140px;
-            height: 140px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(168, 218, 220, 0.18) 0%, rgba(168, 218, 220, 0.06) 70%, transparent 100%);
-            z-index: -1;
-            animation: float 6s ease-in-out infinite;
-            animation-delay: 1.5s;
-        }
-        
-        .decorative-circle-6 {
-            position: fixed;
-            bottom: 35%;
-            left: 35%;
-            width: 160px;
-            height: 160px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(200, 230, 201, 0.2) 0%, rgba(200, 230, 201, 0.06) 70%, transparent 100%);
-            z-index: -1;
-            animation: float 8.5s ease-in-out infinite;
-            animation-delay: 2.5s;
-        }
-        
-        /* Additional decorative circles for more visibility */
-        .decorative-circle-7 {
-            position: fixed;
-            top: 15%;
-            left: 15%;
-            width: 120px;
-            height: 120px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(168, 218, 220, 0.15) 0%, rgba(168, 218, 220, 0.03) 70%, transparent 100%);
-            z-index: -1;
-            animation: float 9s ease-in-out infinite;
-            animation-delay: 3s;
-        }
-        
-        .decorative-circle-8 {
-            position: fixed;
-            bottom: 25%;
-            right: 25%;
-            width: 220px;
-            height: 220px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(11, 73, 62, 0.1) 0%, rgba(11, 73, 62, 0.02) 70%, transparent 100%);
-            z-index: -1;
-            animation: float 11s ease-in-out infinite;
-            animation-delay: 1.5s;
-        }
-        
-        .decorative-circle-9 {
-            position: fixed;
-            top: 60%;
-            right: 5%;
-            width: 100px;
-            height: 100px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(200, 230, 201, 0.2) 0%, rgba(200, 230, 201, 0.05) 70%, transparent 100%);
-            z-index: -1;
-            animation: float 7.5s ease-in-out infinite;
-            animation-delay: 2.8s;
-        }
-        
-        .decorative-circle-10 {
-            position: fixed;
-            top: 70%;
-            left: 8%;
-            width: 180px;
-            height: 180px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(168, 218, 220, 0.12) 0%, rgba(168, 218, 220, 0.04) 70%, transparent 100%);
-            z-index: -1;
-            animation: float 10.5s ease-in-out infinite;
-            animation-delay: 0.8s;
-        }
-        
-        /* Fade-in animation */
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .animate-fadeIn {
-            animation: fadeIn 0.6s ease forwards;
-        }
-        
-        .delay-100 { animation-delay: 0.1s; }
-        .delay-200 { animation-delay: 0.2s; }
-        .delay-300 { animation-delay: 0.3s; }
-        .delay-400 { animation-delay: 0.4s; }
-        
-        /* Custom scrollbar */
-        ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
-        }
-        ::-webkit-scrollbar-track {
-            background: #f1f1f1;
-            border-radius: 10px;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #0b493e;
-            border-radius: 10px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #094236;
-        }
-        
-        /* Glass morphism effect */
-        .glass-effect {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.3);
-        }
-        
-        /* Form styling */
-        .form-input {
-            transition: all 0.3s ease;
-        }
-        
-        .form-input:focus {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(11, 73, 62, 0.15);
-        }
-    </style>
-</head>
-
-<body class="text-gray-800">
-    <!-- Background pattern with circles -->
-    <div class="bg-pattern"></div>
-    <div class="decorative-circle-1"></div>
-    <div class="decorative-circle-2"></div>
-    <div class="decorative-circle-3"></div>
-    <div class="decorative-circle-4"></div>
-    <div class="decorative-circle-5"></div>
-    <div class="decorative-circle-6"></div>
-    <div class="decorative-circle-7"></div>
-    <div class="decorative-circle-8"></div>
-    <div class="decorative-circle-9"></div>
-    <div class="decorative-circle-10"></div>
-
-    <?php include 'header.php'; ?>
-    
-    <!-- Hero Section -->
-    <section class="relative overflow-hidden py-16" style="margin-top: -70px; background: transparent;">
-        <!-- Abstract shapes background -->
-        <div class="absolute inset-0 overflow-hidden">
-            <div class="absolute -top-24 -right-24 w-96 h-96 bg-primary-50 rounded-full opacity-30 animate-pulse"></div>
-            <div class="absolute top-40 -left-20 w-72 h-72 bg-secondary-100 rounded-full opacity-20" style="animation: float 8s ease-in-out infinite;"></div>
-            <div class="absolute -bottom-32 right-20 w-80 h-80 bg-primary-100 rounded-full opacity-20" style="animation: float 10s ease-in-out infinite; animation-delay: 1s;"></div>
-        </div>
-        
-        <!-- Content -->
-        <div class="container mx-auto max-w-4xl px-4 relative z-10">
-            <div class="flex flex-col items-center text-center">
-                <!-- Back Button -->
-                <div class="w-full flex justify-start mb-6 opacity-0 animate-fadeIn">
-                    <a href="response_events.php" class="inline-flex items-center gap-2 bg-white/20 hover:bg-white/30 text-primary-800 font-medium px-6 py-3 rounded-full transition-all duration-300 backdrop-blur-sm shadow-sm hover:shadow-md">
-                        <i class="fas fa-arrow-left"></i>
-                        <span>Back to Events</span>
-                    </a>
+<div class="container layout-sidebar">
+    <div class="stack">
+        <div class="card">
+            <div class="row-between mb-2">
+                <?= status_badge($event['status']) ?>
+                <div class="row">
+                    <form method="post" class="inline-form">
+                        <?= csrf_field() ?><input type="hidden" name="action" value="like">
+                        <button class="btn btn-sm <?= $s['liked'] ? 'is-on' : 'btn-outline' ?>"><i class="fa-<?= $s['liked'] ? 'solid' : 'regular' ?> fa-heart"></i> <?= $s['likes'] ?></button>
+                    </form>
+                    <?php if ($event['status'] === 'active'): ?>
+                        <?php if (!$s['joined']): ?>
+                            <form method="post" class="inline-form"><?= csrf_field() ?><input type="hidden" name="action" value="join">
+                                <button class="btn btn-primary btn-sm"><i class="fa-solid fa-user-plus"></i> Join event</button></form>
+                        <?php elseif (!$isOwner): ?>
+                            <form method="post" class="inline-form"><?= csrf_field() ?><input type="hidden" name="action" value="leave">
+                                <button class="btn btn-outline btn-sm"><i class="fa-solid fa-check"></i> Joined · Leave</button></form>
+                        <?php endif; ?>
+                    <?php endif; ?>
                 </div>
-                
-                <h1 class="text-4xl lg:text-5xl font-bold text-primary-800 mb-4 opacity-0 animate-fadeIn delay-100">Create Event</h1>
-                <p class="text-lg text-primary-800/80 mb-8 max-w-2xl opacity-0 animate-fadeIn delay-200">Share your event with the community and make a positive impact</p>
             </div>
-        </div>
-    </section>
 
-    <!-- Main Content -->
-    <section class="py-12 px-4" style="background: transparent !important;">
-        <div class="container mx-auto max-w-3xl">
-            <!-- Form Container -->
-            <div class="glass-effect rounded-3xl shadow-card p-8 md:p-12 opacity-0 animate-fadeIn delay-300">
-                <?php if (isset($error)): ?>
-                    <div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl mb-6 flex items-center gap-2">
-                        <i class="fas fa-exclamation-triangle"></i>
-                        <span><?php echo htmlspecialchars($error); ?></span>
-                    </div>
-                <?php endif; ?>
+            <dl class="kv mb-3">
+                <dt>When</dt><dd><?= $event['event_date'] ? fmt_date($event['event_date'], 'l, d F Y · g:i A') : 'To be announced' ?></dd>
+                <dt>Where</dt><dd><?= e($event['venue'] ?: $event['area']) ?></dd>
+                <dt>Organiser</dt><dd><?= e($event['full_name']) ?><?= verified_tick($event) ?></dd>
+                <dt>Contact</dt><dd><a href="tel:<?= e($event['contact']) ?>"><?= e($event['contact']) ?></a></dd>
+                <dt>Posted</dt><dd><?= time_ago($event['created_at']) ?></dd>
+            </dl>
+            <div class="prose"><?= e($event['description']) ?></div>
 
-                <form method="POST" action="event.php" class="space-y-6">
-                    <!-- User Information Row -->
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div>
-                            <label for="username" class="block text-sm font-semibold text-primary-800 mb-2">
-                                <i class="fas fa-user mr-2 text-primary-500"></i>Username
-                            </label>
-                            <input type="text" 
-                                   class="form-input w-full px-4 py-3 border border-primary-200 rounded-xl bg-white/80 text-primary-800 focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-200" 
-                                   id="username" 
-                                   name="username" 
-                                   value="<?php echo htmlspecialchars($user['username']); ?>" 
-                                   readonly>
-                        </div>
-                        <div>
-                            <label for="contact" class="block text-sm font-semibold text-primary-800 mb-2">
-                                <i class="fas fa-phone mr-2 text-primary-500"></i>Contact No.
-                            </label>
-                            <input type="text" 
-                                   class="form-input w-full px-4 py-3 border border-primary-200 rounded-xl bg-white/80 text-primary-800 focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-200" 
-                                   id="contact" 
-                                   name="contact" 
-                                   value="<?php echo htmlspecialchars($user['contact_no']); ?>" 
-                                   readonly>
-                        </div>
-                    </div>
+            <?php if ($event['status'] !== 'active'): ?>
+                <div class="alert alert-success mt-3 mb-0"><i class="fa-solid fa-flag-checkered"></i><span>
+                    Completed on <?= fmt_date($event['completed_at']) ?>.
+                    <?php if ($verifier): ?>Verified by <?= e($verifier) ?> on <?= fmt_date($event['verified_at']) ?>.<?php endif; ?>
+                    <?php if ($event['status'] === 'approved'): ?>Approved by the admin on <?= fmt_date($event['approved_at']) ?>.<?php endif; ?>
+                    <?php if ($event['status'] === 'completed'): ?>Waiting for a verified local representative to confirm.<?php endif; ?>
+                </span></div>
+            <?php endif; ?>
 
-                    <!-- Location -->
-                    <div>
-                        <label for="location" class="block text-sm font-semibold text-primary-800 mb-2">
-                            <i class="fas fa-map-marker-alt mr-2 text-primary-500"></i>Location
-                        </label>
-                        <input type="text" 
-                               class="form-input w-full px-4 py-3 border border-primary-200 rounded-xl bg-white/80 text-primary-800 focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-200" 
-                               id="location" 
-                               name="location" 
-                               value="<?php echo htmlspecialchars($user['location']); ?>" 
-                               readonly>
-                    </div>
-
-                    <!-- Category -->
-                    <div>
-                        <label for="category" class="block text-sm font-semibold text-primary-800 mb-2">
-                            <i class="fas fa-tags mr-2 text-primary-500"></i>Event Category
-                        </label>
-                        <select class="form-input w-full px-4 py-3 border border-primary-200 rounded-xl bg-white/80 text-primary-800 focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-200" 
-                                id="category" 
-                                name="category" 
-                                required>
-                            <option selected disabled value="">-- Select a Category --</option>
-                            <option value="Community Development Events">Community Development Events</option>
-                            <option value="Health and Wellness Events">Health and Wellness Events</option>
-                            <option value="Educational and Awareness Events">Educational and Awareness Events</option>
-                            <option value="Social and Cultural Events">Social and Cultural Events</option>
-                            <option value="Environment and Sustainability">Environment and Sustainability</option>
-                            <option value="Others">Others</option>
-                        </select>
-                    </div>
-
-                    <!-- Event Description -->
-                    <div>
-                        <label for="event_description" class="block text-sm font-semibold text-primary-800 mb-2">
-                            <i class="fas fa-edit mr-2 text-primary-500"></i>Event Description
-                        </label>
-                        <textarea class="form-input w-full px-4 py-3 border border-primary-200 rounded-xl bg-white/80 text-primary-800 focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-200 resize-none" 
-                                  id="event_description" 
-                                  name="event_description" 
-                                  rows="6"
-                                  placeholder="Describe your event in detail - include the purpose, activities, target audience, and any special requirements..." 
-                                  required></textarea>
-                    </div>
-
-                    <!-- Submit Button -->
-                    <div class="flex justify-center pt-6">
-                        <button type="submit" 
-                                class="group bg-primary-500 hover:bg-primary-600 text-white font-semibold py-4 px-8 rounded-xl shadow-lg transition-all duration-300 transform hover:scale-105 hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-primary-400 flex items-center gap-3">
-                            <i class="fas fa-calendar-plus group-hover:scale-110 transition-transform duration-300"></i>
-                            <span>Create Event</span>
-                        </button>
-                    </div>
+            <?php if ($isOwner && $event['status'] === 'active'): ?>
+                <div class="row mt-3">
+                    <form method="post" class="inline-form" data-confirm="Mark this event as completed? Participants can no longer join.">
+                        <?= csrf_field() ?><input type="hidden" name="action" value="complete">
+                        <button class="btn btn-primary btn-sm"><i class="fa-solid fa-flag-checkered"></i> Mark as completed</button>
+                    </form>
+                    <form method="post" class="inline-form" data-confirm="Delete this event and all its comments, participants and donations?">
+                        <?= csrf_field() ?><input type="hidden" name="action" value="delete">
+                        <button class="btn btn-danger-outline btn-sm"><i class="fa-solid fa-trash"></i> Delete</button>
+                    </form>
+                </div>
+            <?php endif; ?>
+            <?php if ($isLocalRep && !$isOwner && $event['status'] === 'completed'): ?>
+                <form method="post" class="mt-3" data-confirm="Confirm that this event really took place and the work was done?">
+                    <?= csrf_field() ?><input type="hidden" name="action" value="verify">
+                    <button class="btn btn-primary"><i class="fa-solid fa-circle-check"></i> Verify as local representative</button>
                 </form>
-            </div>
+            <?php endif; ?>
         </div>
-    </section>
 
-    <script>
-        // Form validation
-        document.querySelector('form').addEventListener('submit', function(e) {
-            const description = document.getElementById('event_description').value.trim();
-            const category = document.getElementById('category').value;
+        <div class="card" id="comments">
+            <h3 class="card-title"><i class="fa-solid fa-comments"></i> Discussion (<?= count($comments) ?>)</h3>
+            <?php foreach ($comments as $c): ?>
+                <div class="comment">
+                    <?= avatar($c, 'sm') ?>
+                    <div class="comment-bubble">
+                        <div class="row-between">
+                            <strong><?= e($c['full_name']) ?><?= verified_tick($c) ?> <small class="muted"><?= time_ago($c['created_at']) ?></small></strong>
+                            <?php if ((int) $c['user_id'] === $uid || $isOwner): ?>
+                                <form method="post" class="inline-form" data-confirm="Delete this comment?">
+                                    <?= csrf_field() ?><input type="hidden" name="action" value="delete_comment"><input type="hidden" name="comment_id" value="<?= $c['id'] ?>">
+                                    <button class="btn btn-ghost btn-sm" title="Delete"><i class="fa-solid fa-trash"></i></button>
+                                </form>
+                            <?php endif; ?>
+                        </div>
+                        <div class="prose"><?= e($c['body']) ?></div>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+            <?php if (!$comments): ?><p class="muted">No comments yet. Start the conversation.</p><?php endif; ?>
+            <form method="post" class="mt-2 stack">
+                <?= csrf_field() ?><input type="hidden" name="action" value="comment">
+                <textarea class="textarea" name="body" rows="3" maxlength="1000" placeholder="Ask a question or offer help…" required></textarea>
+                <div class="text-center" style="text-align:right"><button class="btn btn-primary btn-sm"><i class="fa-solid fa-paper-plane"></i> Post comment</button></div>
+            </form>
+        </div>
+    </div>
 
-            if (description === '') {
-                e.preventDefault();
-                showNotification('Please enter a description for the event.', 'error');
-                return false;
-            }
+    <aside class="stack">
+        <div class="card">
+            <h3 class="card-title"><i class="fa-solid fa-hand-holding-dollar"></i> Fundraising</h3>
+            <?php if ($fund && $fund['status'] !== 'pending'): ?>
+                <div class="stat-value mt-1"><?= money($s['raised']) ?></div>
+                <p class="muted small mb-1">raised of <?= money($fund['target_amount']) ?> from <?= $s['donors'] ?> donor<?= $s['donors'] == 1 ? '' : 's' ?></p>
+                <div class="progress"><span style="width:<?= min(100, round($s['raised'] / $fund['target_amount'] * 100)) ?>%"></span></div>
+                <?php if ($fund['purpose']): ?><p class="small mt-2 mb-0"><strong>Purpose:</strong> <?= e($fund['purpose']) ?></p><?php endif; ?>
+                <p class="small muted mt-1 mb-0"><i class="fa-solid fa-user-check"></i> Approved by <?= e($fundApprover ?: 'admin') ?></p>
+                <?php if ($fund['status'] === 'open'): ?>
+                    <button class="btn btn-accent btn-block mt-2" data-open="donateModal"><i class="fa-solid fa-heart"></i> Donate</button>
+                    <?php if ($isOwner): ?>
+                        <form method="post" class="mt-1" data-confirm="Close the fundraiser? No more donations will be accepted.">
+                            <?= csrf_field() ?><input type="hidden" name="action" value="close_fund">
+                            <button class="btn btn-ghost btn-sm btn-block">Close fundraiser</button>
+                        </form>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <p class="badge badge-muted mt-2">Fundraiser closed</p>
+                <?php endif; ?>
+            <?php elseif ($fund): ?>
+                <p class="mt-1"><?= status_badge('pending') ?> Request for <strong><?= money($fund['target_amount']) ?></strong></p>
+                <?php if ($fund['purpose']): ?><p class="small"><?= e($fund['purpose']) ?></p><?php endif; ?>
+                <?php if ($isLocalRep && !$isOwner): ?>
+                    <form method="post" data-confirm="Approve this fundraiser for <?= e(money($fund['target_amount'])) ?>?">
+                        <?= csrf_field() ?><input type="hidden" name="action" value="approve_fund">
+                        <button class="btn btn-primary btn-block"><i class="fa-solid fa-check"></i> Approve fundraiser</button>
+                    </form>
+                <?php else: ?>
+                    <p class="muted small mb-0">Waiting for a verified local representative to approve.</p>
+                <?php endif; ?>
+                <?php if ($isOwner): ?>
+                    <button class="btn btn-outline btn-sm btn-block mt-2" data-open="fundModal">Edit request</button>
+                <?php endif; ?>
+            <?php elseif ($isOwner && $event['status'] === 'active'): ?>
+                <p class="muted small mt-1">Need money for supplies or logistics? Request a fundraiser — a verified local representative approves it.</p>
+                <button class="btn btn-outline btn-block" data-open="fundModal"><i class="fa-solid fa-plus"></i> Request funding</button>
+            <?php else: ?>
+                <p class="muted small mt-1 mb-0">This event is not raising funds.</p>
+            <?php endif; ?>
+        </div>
 
-            if (category === '') {
-                e.preventDefault();
-                showNotification('Please select a category for the event.', 'error');
-                return false;
-            }
+        <div class="card">
+            <h3 class="card-title"><i class="fa-solid fa-users"></i> Participants (<?= count($participants) ?>)</h3>
+            <ul class="list mt-2">
+                <?php foreach ($participants as $pt): ?>
+                    <li class="list-item" style="align-items:center">
+                        <?= avatar($pt, 'sm') ?>
+                        <div class="list-body"><strong><?= e($pt['full_name']) ?><?= verified_tick($pt) ?></strong>
+                            <small class="muted"><?= (int) $pt['id'] === (int) $event['user_id'] ? 'Organiser' : '@' . e($pt['username']) ?></small></div>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
+    </aside>
+</div>
 
-            return true;
-        });
+<?php if ($isOwner): ?>
+<dialog class="modal" id="fundModal">
+    <form method="post">
+        <div class="modal-head"><h3>Request funding</h3><button type="button" class="modal-close" data-close>&times;</button></div>
+        <div class="modal-body stack">
+            <?= csrf_field() ?><input type="hidden" name="action" value="request_fund">
+            <div class="field">
+                <label for="target_amount">Target amount (৳)</label>
+                <input class="input" type="number" min="100" step="1" id="target_amount" name="target_amount" value="<?= e($fund['target_amount'] ?? '') ?>" required>
+            </div>
+            <div class="field">
+                <label for="purpose">What is the money for?</label>
+                <input class="input" id="purpose" name="purpose" maxlength="255" value="<?= e($fund['purpose'] ?? '') ?>" placeholder="e.g. gloves, bags and a waste van">
+            </div>
+            <div class="form-actions"><button type="button" class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-primary">Send request</button></div>
+        </div>
+    </form>
+</dialog>
+<?php endif; ?>
 
-        // Notification function
-        function showNotification(message, type = 'success') {
-            const notification = document.createElement('div');
-            notification.className = `fixed top-4 right-4 z-50 px-6 py-3 rounded-lg shadow-lg text-white font-medium transform translate-x-full transition-transform duration-300 ${
-                type === 'success' ? 'bg-green-500' : 'bg-red-500'
-            }`;
-            notification.textContent = message;
-            
-            document.body.appendChild(notification);
-            
-            // Animate in
-            setTimeout(() => {
-                notification.style.transform = 'translateX(0)';
-            }, 100);
-            
-            // Animate out and remove
-            setTimeout(() => {
-                notification.style.transform = 'translateX(full)';
-                setTimeout(() => {
-                    if (document.body.contains(notification)) {
-                        document.body.removeChild(notification);
-                    }
-                }, 300);
-            }, 3000);
-        }
+<?php if ($fund && $fund['status'] === 'open'): ?>
+<dialog class="modal" id="donateModal">
+    <form method="post">
+        <div class="modal-head"><h3>Donate to this event</h3><button type="button" class="modal-close" data-close>&times;</button></div>
+        <div class="modal-body stack">
+            <?= csrf_field() ?><input type="hidden" name="action" value="donate">
+            <p class="muted small mb-0">Send your donation to the organiser (<?= e($event['contact']) ?>) and record it here so everyone can see the progress.</p>
+            <div class="field">
+                <label for="amount">Amount (৳)</label>
+                <input class="input" type="number" min="10" step="1" id="amount" name="amount" required>
+            </div>
+            <div class="field">
+                <label for="method">Payment method</label>
+                <select class="select" id="method" name="method">
+                    <?php foreach (DONATION_METHODS as $m): ?><option><?= $m ?></option><?php endforeach; ?>
+                </select>
+            </div>
+            <div class="field">
+                <label for="transaction_ref">Transaction ID (optional)</label>
+                <input class="input" id="transaction_ref" name="transaction_ref" maxlength="100">
+            </div>
+            <div class="form-actions"><button type="button" class="btn btn-ghost" data-close>Cancel</button><button class="btn btn-accent"><i class="fa-solid fa-heart"></i> Record donation</button></div>
+        </div>
+    </form>
+</dialog>
+<?php endif; ?>
 
-        // Add smooth scroll behavior
-        document.documentElement.style.scrollBehavior = 'smooth';
-
-        // Character counter for description
-        const descriptionTextarea = document.getElementById('event_description');
-        const maxLength = 1000;
-        
-        // Create character counter
-        const counterDiv = document.createElement('div');
-        counterDiv.className = 'text-sm text-gray-500 mt-1 text-right';
-        counterDiv.textContent = `0 / ${maxLength} characters`;
-        descriptionTextarea.parentNode.appendChild(counterDiv);
-
-        descriptionTextarea.addEventListener('input', function() {
-            const length = this.value.length;
-            counterDiv.textContent = `${length} / ${maxLength} characters`;
-            counterDiv.className = length > maxLength * 0.9 ? 'text-sm text-orange-500 mt-1 text-right' : 'text-sm text-gray-500 mt-1 text-right';
-        });
-    </script>
-</body>
-
-</html>
+<?php include __DIR__ . '/includes/footer.php'; ?>

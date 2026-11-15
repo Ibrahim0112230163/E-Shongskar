@@ -1,0 +1,2 @@
+# Block direct web access to PHP internals
+Require all denied
